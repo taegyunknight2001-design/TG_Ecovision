@@ -8,17 +8,17 @@ from datetime import datetime
 import time
 from typing import List, Dict, Tuple, Any, Optional
 
-# 인프라 환경 변수 최적화 (엔진 로그 억제)
+# 엔진 내부 가속기 로그 및 경고 억제
 os.environ["TF_CPP_MIN_LOG_LEVEL"] = "3"
 
-# 시스템 글로벌 고정 상수
+# 글로벌 하드웨어 및 인프라 상수
 IMG_SIZE: int = 224
 MODEL_PATH: str = "ecovision_material_model.keras"
 FEEDBACK_CSV: str = "user_feedback.csv"
 USER_DATA_DIR: str = "user_dataset"
 DATASET_ROOT: str = "dataset"
 
-# 6-Class 데이터 동기화 라인 (Alphabetical Order)
+# 6-Class 알파벳 순서 정렬 구조 완전 동기화
 TARGET_CLASSES: List[str] = ["cardboard", "glass", "metal", "paper", "plastic", "trash"]
 
 CLASS_INFO: Dict[str, Dict[str, Any]] = {
@@ -33,11 +33,11 @@ CLASS_INFO: Dict[str, Dict[str, Any]] = {
 
 st.set_page_config(page_title="EcoVision Analytics Kernel", layout="wide", initial_sidebar_state="expanded")
 
-# UI 인젝션 스타일 커스텀
+# 가독성을 극대화하기 위한 지표 폰트 웨이트 세팅
 st.markdown("<style>div[data-testid='stMetricValue'] { color: #2e7d32; font-weight: 800; }</style>", unsafe_allow_html=True)
 
 st.title("Multi-Class Solid Waste Classification & Interpretability Framework")
-st.caption("Core Infrastructure Architecture: MobileNetV2 Transfer Kernel / Edge-side Salience Tracker v1.2.0")
+st.caption("Core Infrastructure Architecture: MobileNetV2 Transfer Kernel / Edge-side Salience Tracker v1.3.0")
 
 def _normalize_token(token: str) -> str:
     return token.lower().replace(" ", "").replace("_", "").replace("-", "")
@@ -53,7 +53,7 @@ def map_directory_to_label(folder_name: str) -> Optional[str]:
 
 def scan_local_dataset(root_dir: str) -> pd.DataFrame:
     if not os.path.exists(root_dir):
-        return pd.DataFrame(columns=["Directory", "TargetLabel", "ClassKo", "FileCount", "AbsPath"])
+        return pd.DataFrame(columns=["Directory", "TargetLabel", "ClassKo", "FileCount"])
     
     dataset_records: List[Dict[str, Any]] = []
     for current_dir, _, files in os.walk(root_dir):
@@ -66,7 +66,7 @@ def scan_local_dataset(root_dir: str) -> pd.DataFrame:
             
         dataset_records.append({
             "Directory": dir_basename, "TargetLabel": matched_label,
-            "ClassKo": CLASS_INFO[matched_label]["ko"], "FileCount": len(images), "AbsPath": current_dir
+            "ClassKo": CLASS_INFO[matched_label]["ko"], "FileCount": len(images)
         })
     return pd.DataFrame(dataset_records)
 
@@ -149,7 +149,7 @@ def execute_pipeline_inference(model: Any, image: Image.Image) -> Tuple[str, flo
 
     top_hypothesis = distribution_matrix[0]
 
-    # 투명 무색 고반사 객체(PET병) 오분류 억제를 위한 크로마티시티-인텐시티 하이브리드 보정 알고리즘
+    # 투명 무색 고반사 객체(PET병) 오분류 억제를 위한 하이브리드 보정 제어 로직
     if top_hypothesis["label"] in ["paper", "cardboard"]:
         raw_rgb_matrix = np.array(tensor_resized.convert("RGB")).astype(np.float32)
         mean_intensity = raw_rgb_matrix.mean()
@@ -189,25 +189,25 @@ def commit_system_feedback(image: Image.Image, filename: str, pred_label: str, c
             df_log.to_csv(FEEDBACK_CSV, mode="a", header=False, index=False, encoding="utf-8-sig")
         else:
             df_log.to_csv(FEEDBACK_CSV, index=False, encoding="utf-8-sig")
-        return "액티브 러닝 데이터 허브 반영이 완벽히 완료되었습니다."
+        return "액티브 러닝 데이터 세트 반영 완료."
     except Exception as io_error:
         return f"Feedback IO Exception: {io_error}"
 
-# 인프라 스트럭처 모니터 바인딩
+# 인프라 스트럭처 모니터링 컴포넌트 (구버전 호환용으로 포맷 간소화)
 df_local_infra = scan_local_dataset(DATASET_ROOT)
 st.sidebar.subheader("Data Infrastructure Monitor")
 if not df_local_infra.empty:
-    st.sidebar.dataframe(df_local_infra[["Directory", "Type", "FileCount"]], use_container_width=True, hide_index=True)
+    st.sidebar.dataframe(df_local_infra[["Directory", "Type", "FileCount"]])
 else:
     st.sidebar.info("No structured repository discovered.")
 
 neural_engine_instance = load_neural_engine()
 if neural_engine_instance is not None:
-    st.sidebar.success("Inference Engine: Active (6-Class Mode)")
+    st.sidebar.success("Inference Engine: Active")
 else:
-    st.sidebar.warning("Inference Engine: Model Weights Unresolved")
+    st.sidebar.warning("Inference Engine: Weights Missing")
 
-# 런타임 추론 작업 영역
+# 런타임 이미지 입력 스트림 마운트
 uploaded_buffer = st.file_uploader("인퍼런스 파이프라인 입력 소스 이미지 마운트", type=["jpg", "jpeg", "png", "webp"])
 
 if uploaded_buffer:
@@ -222,20 +222,20 @@ if uploaded_buffer:
     latency_delta = round((time.time() - execution_timer_start) * 1000, 1)
     target_meta = CLASS_INFO[predicted_class]
 
-    # 반응형 레이아웃 스플릿 (호환성 보장)
+    # 구버전 및 신버전에서 무조건 호환되는 컬럼 레이아웃 매핑
     grid_left, grid_right = st.columns([1, 1])
 
     with grid_left:
         st.caption("Input Stream Source Frame")
-        st.image(runtime_image, use_container_width=True)
+        st.image(runtime_image, use_column_width=True)
 
     with grid_right:
         st.caption("Edge-Side Spatial Salience Feature Cloud")
         cropped_tensor_view = extract_bounding_roi(runtime_image).resize((IMG_SIZE, IMG_SIZE))
         salience_heatmap_frame = generate_salience_map(cropped_tensor_view)
-        st.image(salience_heatmap_frame, use_container_width=True)
+        st.image(salience_heatmap_frame, use_column_width=True)
 
-    # Core KPI 스코어 매트릭스
+    # Core KPI 스코어보드 매트릭스
     st.subheader("Real-time Inference Evaluation Scoreboard")
     m_col1, m_col2, m_col3, m_col4 = st.columns(4)
     m_col1.metric("Predicted Target Class", target_meta["ko"])
@@ -244,15 +244,15 @@ if uploaded_buffer:
     m_col4.metric("Carbon Avoidance Value", f"{target_meta['carbon']:.2f} kgCO₂e")
     st.info(f"배출 표준 규격 가이드라인: {target_meta['guide']}")
 
-    # 확률 질량 분포 및 액티브 러닝 제어 모듈
+    # 확률 질량 분포 및 피드백 제어 루프
     sub_grid_left, sub_grid_right = st.columns([1, 1])
     with sub_grid_left:
         st.subheader("Softmax Density Distribution")
         if rank_k_matrix:
             for item in rank_k_matrix:
                 st.write(f"**{item['ko']}** : {item['confidence']:.1f}%")
-                # 버전에 따른 타입 에러 방지를 위해 명확한 float 정규화 값(0.0~1.0) 매핑 조치
-                st.progress(float(min(item["confidence"] / 100.0, 1.0)))
+                # 구버전 전용 유니버설 정수(0~100) 스케일로 바인딩 안정화
+                st.progress(int(max(0, min(item["confidence"], 100))))
         else:
             st.info("Softmax activation disabled (Engine Offline).")
 
@@ -260,7 +260,7 @@ if uploaded_buffer:
         st.subheader("Active Learning Feedback Loop")
         user_verified_token = st.selectbox("물리적 참값 정답 레이블 확정/정정", TARGET_CLASSES, format_func=lambda x: CLASS_INFO[x]["ko"])
         
-        if st.button("Commit Log to Dataset Matrix", use_container_width=True, type="primary"):
+        if st.button("Commit Log to Dataset Matrix"):
             result_signal = commit_system_feedback(
                 image=runtime_image, filename=uploaded_buffer.name,
                 pred_label=predicted_class, conf=inference_confidence, verified_label=user_verified_token
