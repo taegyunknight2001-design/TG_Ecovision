@@ -8,17 +8,17 @@ from datetime import datetime
 import time
 from typing import List, Dict, Tuple, Any, Optional
 
-# 엔진 내부 가속기 로그 및 경고 억제
+# 하드웨어 가속기 로그 및 시스템 경고 억제
 os.environ["TF_CPP_MIN_LOG_LEVEL"] = "3"
 
-# 글로벌 하드웨어 및 인프라 상수
+# 글로벌 불변성 인프라 상수
 IMG_SIZE: int = 224
 MODEL_PATH: str = "ecovision_material_model.keras"
 FEEDBACK_CSV: str = "user_feedback.csv"
 USER_DATA_DIR: str = "user_dataset"
 DATASET_ROOT: str = "dataset"
 
-# 6-Class 알파벳 순서 정렬 구조 완전 동기화
+# 6-Class 알파벳 순서 정렬 규격 동기화
 TARGET_CLASSES: List[str] = ["cardboard", "glass", "metal", "paper", "plastic", "trash"]
 
 CLASS_INFO: Dict[str, Dict[str, Any]] = {
@@ -33,11 +33,11 @@ CLASS_INFO: Dict[str, Dict[str, Any]] = {
 
 st.set_page_config(page_title="EcoVision Analytics Kernel", layout="wide", initial_sidebar_state="expanded")
 
-# 가독성을 극대화하기 위한 지표 폰트 웨이트 세팅
+# 메트릭 컴포넌트 폰트 스타일 최적화
 st.markdown("<style>div[data-testid='stMetricValue'] { color: #2e7d32; font-weight: 800; }</style>", unsafe_allow_html=True)
 
 st.title("Multi-Class Solid Waste Classification & Interpretability Framework")
-st.caption("Core Infrastructure Architecture: MobileNetV2 Transfer Kernel / Edge-side Salience Tracker v1.3.0")
+st.caption("Core Infrastructure Architecture: MobileNetV2 Transfer Kernel / Edge-side Salience Tracker v1.4.0")
 
 def _normalize_token(token: str) -> str:
     return token.lower().replace(" ", "").replace("_", "").replace("-", "")
@@ -65,20 +65,33 @@ def scan_local_dataset(root_dir: str) -> pd.DataFrame:
         if not matched_label: continue
             
         dataset_records.append({
-            "Directory": dir_basename, "TargetLabel": matched_label,
-            "ClassKo": CLASS_INFO[matched_label]["ko"], "FileCount": len(images)
+            "Directory": dir_basename, 
+            "TargetLabel": matched_label,
+            "ClassKo": CLASS_INFO[matched_label]["ko"], 
+            "FileCount": len(images)
         })
     return pd.DataFrame(dataset_records)
 
-@st.cache_resource
-def load_neural_engine() -> Optional[Any]:
-    if not os.path.exists(MODEL_PATH): return None
-    try:
-        import tensorflow as tf
-        return tf.keras.models.load_model(MODEL_PATH)
-    except Exception as runtime_error:
-        st.sidebar.error(f"Kernel Initialization Failure: {runtime_error}")
-        return None
+# [초광범위 하위 호환성 랩핑] Streamlit 버전에 관계없이 캐싱이 작동하도록 유연하게 예외 처리
+if hasattr(st, "cache_resource"):
+    @st.cache_resource
+    def load_neural_engine() -> Optional[Any]:
+        if not os.path.exists(MODEL_PATH): return None
+        try:
+            import tensorflow as tf
+            return tf.keras.models.load_model(MODEL_PATH)
+        except Exception as e:
+            st.sidebar.error(f"Engine Load Error: {e}")
+            return None
+else:
+    def load_neural_engine() -> Optional[Any]:
+        if not os.path.exists(MODEL_PATH): return None
+        try:
+            import tensorflow as tf
+            return tf.keras.models.load_model(MODEL_PATH)
+        except Exception as e:
+            st.sidebar.error(f"Engine Load Error: {e}")
+            return None
 
 def extract_bounding_roi(image: Image.Image) -> Image.Image:
     """배경 잡음 억제 및 타겟 객체 중심 정렬을 위한 공간 통계 기반 ROI 크롭 알고리즘"""
@@ -149,7 +162,7 @@ def execute_pipeline_inference(model: Any, image: Image.Image) -> Tuple[str, flo
 
     top_hypothesis = distribution_matrix[0]
 
-    # 투명 무색 고반사 객체(PET병) 오분류 억제를 위한 하이브리드 보정 제어 로직
+    # 투명 무색 고반사 객체(PET병) 오분류 예방 보정 제어 스위치
     if top_hypothesis["label"] in ["paper", "cardboard"]:
         raw_rgb_matrix = np.array(tensor_resized.convert("RGB")).astype(np.float32)
         mean_intensity = raw_rgb_matrix.mean()
@@ -189,15 +202,17 @@ def commit_system_feedback(image: Image.Image, filename: str, pred_label: str, c
             df_log.to_csv(FEEDBACK_CSV, mode="a", header=False, index=False, encoding="utf-8-sig")
         else:
             df_log.to_csv(FEEDBACK_CSV, index=False, encoding="utf-8-sig")
-        return "액티브 러닝 데이터 세트 반영 완료."
+        return "액티브 러닝 데이터 허브 반영이 완벽히 완료되었습니다."
     except Exception as io_error:
         return f"Feedback IO Exception: {io_error}"
 
-# 인프라 스트럭처 모니터링 컴포넌트 (구버전 호환용으로 포맷 간소화)
+# [핵심 버그 수정 섹션] 실제 존재하는 컬럼 명인 ClassKo로 매핑하여 KeyError 차단
 df_local_infra = scan_local_dataset(DATASET_ROOT)
 st.sidebar.subheader("Data Infrastructure Monitor")
 if not df_local_infra.empty:
-    st.sidebar.dataframe(df_local_infra[["Directory", "Type", "FileCount"]])
+    df_display = df_local_infra[["Directory", "ClassKo", "FileCount"]].copy()
+    df_display.columns = ["Directory", "Target Class", "File Count"]
+    st.sidebar.dataframe(df_display)
 else:
     st.sidebar.info("No structured repository discovered.")
 
@@ -207,7 +222,7 @@ if neural_engine_instance is not None:
 else:
     st.sidebar.warning("Inference Engine: Weights Missing")
 
-# 런타임 이미지 입력 스트림 마운트
+# 추론 및 시각화 파이프라인
 uploaded_buffer = st.file_uploader("인퍼런스 파이프라인 입력 소스 이미지 마운트", type=["jpg", "jpeg", "png", "webp"])
 
 if uploaded_buffer:
@@ -222,7 +237,7 @@ if uploaded_buffer:
     latency_delta = round((time.time() - execution_timer_start) * 1000, 1)
     target_meta = CLASS_INFO[predicted_class]
 
-    # 구버전 및 신버전에서 무조건 호환되는 컬럼 레이아웃 매핑
+    # 구버전 레이아웃 엔진 100% 대응 스플릿
     grid_left, grid_right = st.columns([1, 1])
 
     with grid_left:
@@ -235,23 +250,30 @@ if uploaded_buffer:
         salience_heatmap_frame = generate_salience_map(cropped_tensor_view)
         st.image(salience_heatmap_frame, use_column_width=True)
 
-    # Core KPI 스코어보드 매트릭스
+    # Core Performance KPI 메트릭 스코어보드 (구버전 겸용 랩핑 레이어)
     st.subheader("Real-time Inference Evaluation Scoreboard")
     m_col1, m_col2, m_col3, m_col4 = st.columns(4)
-    m_col1.metric("Predicted Target Class", target_meta["ko"])
-    m_col2.metric("Top-1 Confidence Score", f"{inference_confidence:.1f}%" if neural_engine_instance else "0.0%")
-    m_col3.metric("Pipeline Latency", f"{latency_delta} ms")
-    m_col4.metric("Carbon Avoidance Value", f"{target_meta['carbon']:.2f} kgCO₂e")
+    
+    if hasattr(st, "metric"):
+        m_col1.metric("Predicted Target Class", target_meta["ko"])
+        m_col2.metric("Top-1 Confidence Score", f"{inference_confidence:.1f}%" if neural_engine_instance else "0.0%")
+        m_col3.metric("Pipeline Latency", f"{latency_delta} ms")
+        m_col4.metric("Carbon Avoidance Value", f"{target_meta['carbon']:.2f} kgCO₂e")
+    else:
+        m_col1.write(f"**Predicted Class:** {target_meta['ko']}")
+        m_col2.write(f"**Confidence:** {inference_confidence:.1f}%")
+        m_col3.write(f"**Latency:** {latency_delta} ms")
+        m_col4.write(f"**Carbon Value:** {target_meta['carbon']:.2f} kgCO₂e")
+        
     st.info(f"배출 표준 규격 가이드라인: {target_meta['guide']}")
 
-    # 확률 질량 분포 및 피드백 제어 루프
+    # 밀도 분포도 및 피드백 시스템 루프
     sub_grid_left, sub_grid_right = st.columns([1, 1])
     with sub_grid_left:
         st.subheader("Softmax Density Distribution")
         if rank_k_matrix:
             for item in rank_k_matrix:
                 st.write(f"**{item['ko']}** : {item['confidence']:.1f}%")
-                # 구버전 전용 유니버설 정수(0~100) 스케일로 바인딩 안정화
                 st.progress(int(max(0, min(item["confidence"], 100))))
         else:
             st.info("Softmax activation disabled (Engine Offline).")
