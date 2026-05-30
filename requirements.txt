@@ -6,3 +6,6 @@ fastapi
 python-multipart
 uvicorn
 rembg[cpu]
+pandas
+pillow
+requests
