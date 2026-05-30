@@ -1,9 +1,10 @@
+
 streamlit
-torch
-torchvision
+torch --index-url https://download.pytorch.org/whl/cpu
+torchvision --index-url https://download.pytorch.org/whl/cpu
 numpy
 pandas
-opencv-python-headless     <-- 기존 opencv-python 대신 이걸로 교체!
+opencv-python-headless
 Pillow
 rembg
 onnxruntime
