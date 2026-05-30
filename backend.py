@@ -1,4 +1,3 @@
-# backend.py
 import os
 import io
 import time
@@ -12,13 +11,14 @@ import cv2
 from fastapi import FastAPI, UploadFile, File, HTTPException
 from pydantic import BaseModel
 from PIL import Image
+from rembg import remove
 
 os.environ["TF_CPP_MIN_LOG_LEVEL"] = "2"
 
 app = FastAPI(
     title="EcoVision Enterprise XAI Core",
-    description="선형 변환 및 행렬 연산 기반 특징점 추출(Grad-CAM) 및 RDBMS 연동 마이크로서비스",
-    version="4.0.0"
+    description="선형 변환 및 행렬 연산 기반 특징점 추출(Grad-CAM), U^2-Net 배경 제거 및 RDBMS 연동 마이크로서비스",
+    version="5.0.0"
 )
 
 MODEL_PATH = "ecovision_material_model.keras"
@@ -90,11 +90,19 @@ async def predict_xai(file: UploadFile = File(...)):
     contents = await file.read()
     
     try:
-        pil_img = Image.open(io.BytesIO(contents)).convert("RGB")
-        cv_img_res = np.array(pil_img.resize((224, 224)))
+        raw_img = Image.open(io.BytesIO(contents)).convert("RGB")
+        
+        # [핵심] 배경 제거 (Background Removal)를 통한 재질 집중 분석
+        no_bg_img = remove(raw_img)
+        
+        # 투명 배경(RGBA)을 모델 입력용 RGB(흰색 배경)로 정제
+        clean_img = Image.new("RGB", no_bg_img.size, (255, 255, 255))
+        clean_img.paste(no_bg_img, mask=no_bg_img.split()[3])
+        
+        cv_img_res = np.array(clean_img.resize((224, 224)))
         
         if model is not None:
-            img_array = tf.keras.utils.img_to_array(pil_img.resize((224, 224)))
+            img_array = tf.keras.utils.img_to_array(clean_img.resize((224, 224)))
             img_array = np.expand_dims(img_array, axis=0)
             img_array = tf.keras.applications.mobilenet_v2.preprocess_input(img_array)
             
@@ -109,6 +117,8 @@ async def predict_xai(file: UploadFile = File(...)):
             time.sleep(0.03) 
             
         latency_ms = round((time.time() - start_time) * 1000, 1)
+        
+        # 배경이 제거된 이미지를 바탕으로 XAI 렌더링
         heatmap_base64 = generate_advanced_feature_map(cv_img_res)
         
         return {
