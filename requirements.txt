@@ -1,8 +1,8 @@
 streamlit
-opencv-python-headless==4.9.0.80
-numpy==1.26.4
-tensorflow-cpu==2.15.0
+torch
+torchvision
+numpy
 pandas
-pillow
+opencv-python
+Pillow
 rembg
-onnxruntime
