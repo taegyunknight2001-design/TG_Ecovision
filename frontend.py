@@ -1,4 +1,3 @@
-# frontend.py
 import streamlit as st
 import requests
 import io
@@ -6,7 +5,7 @@ import base64
 import pandas as pd
 from PIL import Image
 
-st.set_page_config(page_title="EcoVision Enterprise Platform", page_icon="⚡", layout="wide")
+st.set_page_config(page_title="신소재/자원 순환 XAI 플랫폼", page_icon="⚡", layout="wide")
 BACKEND_URL = "http://localhost:8000"
 
 st.markdown("""
@@ -28,15 +27,15 @@ def enterprise_login_system():
         st.session_state.role = None
 
     if not st.session_state.authenticated:
-        st.sidebar.info("관리자 및 개발자 인가가 필요합니다.")
-        auth_id = st.sidebar.text_input("사번 또는 계정 ID")
+        st.sidebar.info("관리자 및 학술 연구자 인가가 필요합니다.")
+        auth_id = st.sidebar.text_input("연구 계정 ID")
         auth_phone = st.sidebar.text_input("인가된 연락처 (2FA 대체용)", type="password")
         
         if st.sidebar.button("시스템 접속", use_container_width=True, type="primary"):
-            # 개발자 고속 우회(Bypass) 로직
+            # 관리자 고속 우회 로직
             if auth_id == "taegyun" and auth_phone == "01099999999":
                 st.session_state.authenticated = True
-                st.session_state.role = "Developer(최상위)"
+                st.session_state.role = "Developer(최상위 관리자)"
                 st.rerun()
             else:
                 st.sidebar.error("인가되지 않은 사용자이거나 정보가 일치하지 않습니다.")
@@ -52,8 +51,8 @@ enterprise_login_system()
 # -----------------------------
 # 2. 메인 대시보드 애플리케이션
 # -----------------------------
-st.title("⚡ 고성능 자원 순환 자동화 및 XAI 모니터링 시스템")
-st.caption("비즈니스 아키텍처 / Explainable AI (Linear Transformation) & Edge Performance")
+st.title("⚡ 신소재 및 자원 순환 자동화 분석 시스템")
+st.caption("비즈니스/대학 학술 아키텍처 | 행렬 연산 기반 설명가능 인공지능(XAI)")
 
 if "xai_res" not in st.session_state: st.session_state.xai_res = None
 if "uploaded_filename" not in st.session_state: st.session_state.uploaded_filename = None
@@ -64,12 +63,12 @@ except:
     analytics_res = {"total_scans": 0, "system_accuracy": 0.0, "chart_labels": [], "carbon_trends": [], "edge_load_pct": 0.0}
     st.warning("데이터베이스 백엔드 서버에 연결할 수 없습니다. FastAPI 서버를 가동해 주십시오.")
 
-st.subheader("🌐 인프라 가동 모니터링 및 누적 ESG 실적")
+st.subheader("🌐 인프라 가동 모니터링 및 누적 성과 지표")
 m1, m2, m3, m4 = st.columns(4)
 m1.metric("종합 판단 무결성", f"{analytics_res['system_accuracy']} %", "RDBMS 검증")
 m2.metric("누적 인프라 순환 분류", f"{analytics_res['total_scans']} 건", "▲ 자동 수집 중")
-m3.metric("Edge CPU 가동률", f"{analytics_res['edge_load_pct']:.1f} %", "🟢 최적화 완료")
-m4.metric("당일 누적 탄소 저감", f"{sum(analytics_res['carbon_trends']):.1f} kg", "ESG 종합 기여")
+m3.metric("Edge CPU 가동률", f"{analytics_res['edge_load_pct']:.1f} %", "🟢 배경 제거 최적화 적용")
+m4.metric("당일 누적 성과", f"{sum(analytics_res['carbon_trends']):.1f} kg", "종합 기여도")
 
 st.divider()
 
@@ -77,15 +76,15 @@ col1, col2 = st.columns([1, 1])
 
 with col1:
     st.markdown("<div class='report-card'>", unsafe_allow_html=True)
-    st.subheader("📸 고해상도 자원 샘플 입력")
+    st.subheader("📸 모델링 샘플 분석 데이터 입력")
     uploaded_file = st.file_uploader("검증을 진행할 순환 자원 이미지 데이터를 업로드하십시오.", type=["png", "jpg", "jpeg"])
     
     if uploaded_file:
         img = Image.open(uploaded_file)
         st.image(img, caption="입력 원본 데이터 세트", use_container_width=True)
         
-        if st.button("🚀 정밀 고속 추론 프로세스 가동", use_container_width=True, type="primary"):
-            with st.spinner("FastAPI 백엔드 행렬 연산 및 특징점 추출 중..."):
+        if st.button("🚀 정밀 고속 추론 (배경 소거 전처리 포함)", use_container_width=True, type="primary"):
+            with st.spinner("FastAPI 백엔드 노이즈 제거 및 행렬 연산 특징 추출 중..."):
                 img_byte_arr = io.BytesIO()
                 img.save(img_byte_arr, format=img.format if img.format else "JPEG")
                 files = {"file": (uploaded_file.name, img_byte_arr.getvalue(), "image/jpeg")}
@@ -107,13 +106,13 @@ with col2:
         p_label, conf, latency = res["prediction"], res["confidence"], res["latency_ms"]
         
         c1, c2, c3 = st.columns(3)
-        c1.metric("AI 최종 예측", p_label.upper())
+        c1.metric("AI 최종 예측 재질", p_label.upper())
         c2.metric("산출 신뢰도", f"{conf} %")
         c3.metric("Edge 지연 처리", f"{latency} ms")
         
-        st.write("🔍 **선형 변환 특징점 맵 분석 (XAI 추출 결과)**")
+        st.write("🔍 **선형 변환 특징점 맵 분석 (배경 소거 완료)**")
         heatmap_bytes = base64.b64decode(res["heatmap_data"])
-        st.image(heatmap_bytes, caption="Grad-CAM 레이어 매핑 (선형 행렬 변환 활성화 영역)", use_container_width=True)
+        st.image(heatmap_bytes, caption="Grad-CAM 레이어 매핑 (객체 표면 질감 활성화 영역)", use_container_width=True)
         
         st.divider()
         st.write("🛠️ **Active Learning 자율형 데이터 정제 시스템**")
@@ -126,5 +125,5 @@ with col2:
             if fb_res.status_code == 200:
                 st.success("🎯 피드백 데이터가 SQLite 엔터프라이즈 DB에 트랜잭션 기록되었습니다.")
     else:
-        st.info("좌측 입력 영역에 순환 자원 샘플을 바인딩하면 시스템이 가동됩니다.")
+        st.info("좌측 입력 영역에 분석할 이미지를 바인딩하면 시스템이 가동됩니다.")
     st.markdown("</div>", unsafe_allow_html=True)
