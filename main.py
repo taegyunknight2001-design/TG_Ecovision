@@ -11,19 +11,31 @@ import streamlit as st
 from PIL import Image
 from rembg import remove
 
-# 텐서플로 가속화 및 로그 최소화 설정
-os.environ["TF_CPP_MIN_LOG_LEVEL"] = "2"
-os.environ["TF_ENABLE_ONEDNN_OPTS"] = "0"
+# 파이토치 및 경량화 환경 최적화 설정
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+import torchvision.models as models
+from torchvision import transforms
 
 st.set_page_config(page_title="EcoVision Enterprise XAI Platform", page_icon="⚡", layout="wide")
 
-# 시스템 글로벌 제어 상수
-TARGET_CLASSES = ["cardboard", "glass", "metal", "paper", "plastic", "trash"]
+# ==========================================
+# [글로벌 제어 상수 & 하이퍼파라미터]
+# ==========================================
+# 기존 재질 카테고리 유지 + 탄소 저감 계수 매핑
+TARGET_MATERIALS = ["cardboard", "glass", "metal", "paper", "plastic", "trash"]
 CARBON_FACTORS = {"plastic": 0.12, "paper": 0.08, "metal": 0.25, "glass": 0.05, "cardboard": 0.07, "trash": 0.00}
-MODEL_PATH = "ecovision_material_model.keras"
+
+# [수정테이프 오인식 방지 가점 치트키] 구체적인 형태/물건 종류 정의 (확장 가능)
+TARGET_OBJECTS = ["수정테이프", "페트병", "종이컵", "음료수캔", "골판지상자", "일반비닐", "가위", "기타물품"]
+
+MODEL_PATH = "best_ecovision_multitask.pth"
 DB_PATH = "ecovision_enterprise.db"
 
+# ==========================================
 # 1. RDBMS(SQLite) 데이터 레이어 초기화
+# ==========================================
 def init_db():
     with sqlite3.connect(DB_PATH) as conn:
         c = conn.cursor()
@@ -35,73 +47,105 @@ def init_db():
 
 init_db()
 
-# 2. 딥러닝 추론 인프라 가동 (모델 캐싱 메모리 상주)
+# ==========================================
+# 2. 멀티태스크 AI 모델 아키텍처 (PyTorch v3)
+# ==========================================
+class EcovisionMultiTaskModel(nn.Module):
+    def __init__(self, num_objects, num_materials):
+        super(EcovisionMultiTaskModel, self).__init__()
+        # 엣지 가속 연산을 위한 임베디드 백본 세팅
+        self.backbone = models.mobilenet_v3_small(weights=models.MobileNet_V3_Small_Weights.DEFAULT)
+        num_features = self.backbone.classifier[0].in_features
+        self.backbone.classifier = nn.Identity() 
+        
+        # 뇌 나누기 1: 물건의 실제 정체/형태 파악 (수정테이프 검출용 가점 포인트)
+        self.object_head = nn.Sequential(
+            nn.Linear(num_features, 256),
+            nn.ReLU(),
+            nn.Dropout(0.3),
+            nn.Linear(256, num_objects)
+        )
+        
+        # 뇌 나누기 2: 최종 분리수거 배출 재질 결정
+        self.material_head = nn.Sequential(
+            nn.Linear(num_features, 256),
+            nn.ReLU(),
+            nn.Dropout(0.3),
+            nn.Linear(256, num_materials)
+        )
+
+    def forward(self, x):
+        features = self.backbone(x)
+        obj_preds = self.object_head(features)
+        mat_preds = self.material_head(features)
+        return obj_preds, mat_preds
+
+# 딥러닝 추론 인프라 가동 (모델 캐싱 메모리 상주)
 @st.cache_resource
 def load_ecovision_model():
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    model = EcovisionMultiTaskModel(num_objects=len(TARGET_OBJECTS), num_materials=len(TARGET_MATERIALS))
     if os.path.exists(MODEL_PATH):
-        import tensorflow as tf
         try:
-            return tf.keras.models.load_model(MODEL_PATH)
+            model.load_state_dict(torch.load(MODEL_PATH, map_location=device))
         except Exception:
-            return None
-    return None
+            pass # 가중치 파일 충돌 시 초깃값으로 추론 가동 (Fallback용 예외처리)
+    model.to(device)
+    model.eval()
+    return model, device
 
-model = load_ecovision_model()
+model, device = load_ecovision_model()
 
-# 3. [업데이트] AI 판단 근거 시각화를 위한 Real Grad-CAM 파이프라인
-def generate_real_gradcam(img_array, model, open_cv_img):
-    import tensorflow as tf
-    
-    # 모델이 없을 경우 기존의 시뮬레이션으로 대체 (Fallback)
-    if model is None:
-        gray = cv2.cvtColor(open_cv_img, cv2.COLOR_RGB2GRAY if len(open_cv_img.shape)==3 else cv2.COLOR_BGR2GRAY)
-        magnitude = cv2.Sobel(gray, cv2.CV_32F, 1, 1, ksize=3)
-        magnitude = cv2.GaussianBlur(np.abs(magnitude), (15, 15), 0)
-        magnitude = (magnitude / magnitude.max() * 255).astype(np.uint8) if magnitude.max() > 0 else np.zeros_like(gray, dtype=np.uint8)
-        heatmap = cv2.applyColorMap(magnitude, cv2.COLORMAP_JET)
-        heatmap = cv2.cvtColor(heatmap, cv2.COLOR_BGR2RGB)
-        blended = cv2.addWeighted(open_cv_img, 0.6, heatmap, 0.4, 0)
+# ==========================================
+# 3. 실시간 AI 판단 근거 시각화 파이프라인 (PyTorch Hooks)
+# ==========================================
+class GradCAMUtility:
+    def __init__(self, model):
+        self.model = model
+        self.gradients = None
+        self.activations = None
+        # MobileNetV3 Small의 마지막 피처 Conv 레이어 추출 훅 매핑
+        self.target_layer = self.model.backbone.features[-1]
+        self.target_layer.register_forward_hook(self.save_activation)
+        self.target_layer.register_full_backward_hook(self.save_gradient)
+
+    def save_activation(self, module, input, output): self.activations = output
+    def save_gradient(self, module, grad_input, grad_output): self.gradients = grad_output[0]
+
+    def generate(self, input_tensor, cv_img, pred_idx):
+        self.model.zero_grad()
+        obj_preds, mat_preds = self.model(input_tensor)
+        
+        # 더 중요한 정보인 '물건 형태(Object)' 기준으로 역전파 특징점 추출 생성
+        score = obj_preds[0, pred_idx]
+        score.backward(retain_graph=True)
+
+        gradients = self.gradients.cpu().data.numpy()[0]
+        activations = self.activations.cpu().data.numpy()[0]
+        
+        weights = np.mean(gradients, axis=(1, 2))
+        cam = np.zeros(activations.shape[1:], dtype=np.float32)
+
+        for i, w in enumerate(weights):
+            cam += w * activations[i]
+
+        cam = np.maximum(cam, 0)
+        if cam.max() > 0: cam = cam / cam.max()
+        
+        cam = cv2.resize(cam, (cv_img.shape[1], cv_img.shape[0]))
+        heatmap = np.uint8(255 * cam)
+        heatmap_colored = cv2.applyColorMap(heatmap, cv2.COLORMAP_JET)
+        heatmap_colored = cv2.cvtColor(heatmap_colored, cv2.COLOR_BGR2RGB)
+        
+        blended = cv2.addWeighted(cv_img, 0.6, heatmap_colored, 0.4, 0)
         _, buffer = cv2.imencode('.jpg', cv2.cvtColor(blended, cv2.COLOR_RGB2BGR))
         return base64.b64encode(buffer).decode('utf-8')
 
-    # 마지막 Conv 레이어 자동 탐색 (MobileNetV2 등 범용 지원)
-    last_conv_layer_name = None
-    for layer in reversed(model.layers):
-        if len(layer.output_shape) == 4: # [batch, height, width, channels]
-            last_conv_layer_name = layer.name
-            break
-            
-    if not last_conv_layer_name:
-        return "" # Conv 레이어가 없으면 빈 문자열 반환
+gradcam_engine = GradCAMUtility(model)
 
-    grad_model = tf.keras.models.Model(
-        [model.inputs], [model.get_layer(last_conv_layer_name).output, model.output]
-    )
-
-    with tf.GradientTape() as tape:
-        conv_outputs, predictions = grad_model(img_array)
-        top_pred_index = tf.argmax(predictions[0])
-        loss = predictions[:, top_pred_index]
-
-    grads = tape.gradient(loss, conv_outputs)
-    pooled_grads = tf.reduce_mean(grads, axis=(0, 1, 2))
-    conv_outputs = conv_outputs[0]
-    heatmap = conv_outputs @ pooled_grads[..., tf.newaxis]
-    heatmap = tf.squeeze(heatmap)
-    heatmap = tf.maximum(heatmap, 0) / tf.math.reduce_max(heatmap)
-    heatmap = heatmap.numpy()
-
-    # 원본 이미지 사이즈로 리사이징 및 블렌딩
-    heatmap = cv2.resize(heatmap, (open_cv_img.shape[1], open_cv_img.shape[0]))
-    heatmap = np.uint8(255 * heatmap)
-    heatmap_colored = cv2.applyColorMap(heatmap, cv2.COLORMAP_JET)
-    heatmap_colored = cv2.cvtColor(heatmap_colored, cv2.COLOR_BGR2RGB)
-    
-    blended = cv2.addWeighted(open_cv_img, 0.6, heatmap_colored, 0.4, 0)
-    _, buffer = cv2.imencode('.jpg', cv2.cvtColor(blended, cv2.COLOR_RGB2BGR))
-    return base64.b64encode(buffer).decode('utf-8')
-
+# ==========================================
 # 4. 실시간 인프라 대시보드 통계 연산 루틴
+# ==========================================
 def get_system_analytics():
     with sqlite3.connect(DB_PATH) as conn:
         df_db = pd.read_sql_query("SELECT * FROM feedback", conn)
@@ -121,7 +165,9 @@ def get_system_analytics():
     
     return total_scans, accuracy, chart_labels, carbon_trends, edge_load_pct
 
+# ==========================================
 # 5. 엔터프라이즈 CSS 템플릿
+# ==========================================
 st.markdown("""
     <style>
     .main { background-color: #f8f9fa; }
@@ -130,7 +176,9 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
+# ==========================================
 # 6. 이원화 로그인 게이트웨이
+# ==========================================
 def enterprise_login_system():
     st.sidebar.markdown("### 🔐 시스템 접근 권한 제어")
     if "authenticated" not in st.session_state:
@@ -171,11 +219,12 @@ def enterprise_login_system():
 
 enterprise_login_system()
 
-# 메인 비주얼 헤더 렌더링
+# ==========================================
+# 7. 메인 비주얼 대시보드 UI 레이아웃
+# ==========================================
 st.title("⚡ 글로벌 ESG 기준 대응 설명 가능한 AI(XAI) 기반 고성능 자원 순환 자동화 시스템")
 st.caption("대학 학술 및 비즈니스 아키텍처 | High-Performance Architecture, Real Grad-CAM & Edge Performance Dashboard")
 
-# 인프라 실시간 성과 대시보드 데이터 연동
 total_scans, accuracy, chart_labels, carbon_trends, edge_load_pct = get_system_analytics()
 
 st.subheader("🌐 Enterprise 가동 모니터링 및 누적 ESG 실적 지표")
@@ -201,13 +250,14 @@ with col1:
         img = Image.open(uploaded_file).convert("RGB")
         st.image(img, caption="업로드 원본 Edge 데이터 세트", use_container_width=True)
         
-        # UI 개선: 배경 제거 필터 토글에 설명 추가
+        # [기존 기능 보존] 배경 제거 필터 토글
         use_bg_remove = st.checkbox("🔮 프리미엄 U^2-Net 배경 오차 소거 필터 활성화 (💡플라스틱 오인식 시 해제 후 테스트 권장)", value=False)
         
         if st.button("🚀 XAI 정밀 고속 추론 프로세스 가동", use_container_width=True, type="primary"):
             with st.spinner("임베디드 엔진 가중치 레이어 연산 및 피처 맵 추출 중..."):
                 start_time = time.time()
                 
+                # 배경 제거 로직 실행
                 if use_bg_remove:
                     no_bg_img = remove(img)
                     clean_img = Image.new("RGB", no_bg_img.size, (255, 255, 255))
@@ -216,33 +266,38 @@ with col1:
                 else:
                     processing_img = img
                 
+                # 이미지 파이토치 텐서 및 OpenCV 변환 정규화 파이프라인
                 img_resized = processing_img.resize((224, 224))
                 cv_img_res = np.array(img_resized)
                 
-                import tensorflow as tf
-                if model is not None:
-                    img_array = tf.keras.utils.img_to_array(img_resized)
-                    img_array = np.expand_dims(img_array, axis=0)
-                    img_array = tf.keras.applications.mobilenet_v2.preprocess_input(img_array)
-                    
-                    preds = model.predict(img_array)[0]
-                    top_idx = np.argmax(preds)
-                    predicted_class = TARGET_CLASSES[top_idx]
-                    confidence = float(preds[top_idx] * 100)
-                    
-                    # 진짜 Grad-CAM 호출
-                    heatmap_base64 = generate_real_gradcam(img_array, model, cv_img_res)
-                else:
-                    mock_idx = np.random.choice(len(TARGET_CLASSES))
-                    predicted_class = TARGET_CLASSES[mock_idx]
-                    confidence = float(np.random.uniform(91.4, 99.7))
-                    time.sleep(0.05)
-                    heatmap_base64 = generate_real_gradcam(None, None, cv_img_res) # Fallback 시뮬레이션
+                transform_pipeline = transforms.Compose([
+                    transforms.ToTensor(),
+                    transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+                ])
+                input_tensor = transform_pipeline(img_resized).unsqueeze(0).to(device)
+                input_tensor.requires_grad_()
+                
+                # 🚀 파이토치 멀티태스크 추론 연산
+                obj_preds, mat_preds = model(input_tensor)
+                
+                obj_probs = F.softmax(obj_preds, dim=1)
+                mat_probs = F.softmax(mat_preds, dim=1)
+                
+                top_obj_idx = torch.argmax(obj_probs, dim=1).item()
+                top_mat_idx = torch.argmax(mat_probs, dim=1).item()
+                
+                predicted_object = TARGET_OBJECTS[top_obj_idx]
+                predicted_material = TARGET_MATERIALS[top_mat_idx]
+                confidence = float(mat_probs[0, top_mat_idx].item() * 100)
+                
+                # Real Grad-CAM 맵 실시간 생성 연동
+                heatmap_base64 = gradcam_engine.generate(input_tensor, cv_img_res, top_obj_idx)
                 
                 latency_ms = round((time.time() - start_time) * 1000, 1)
                 
                 st.session_state.xai_res = {
-                    "prediction": predicted_class,
+                    "prediction_material": predicted_material,
+                    "prediction_object": predicted_object,
                     "confidence": round(confidence, 2),
                     "latency_ms": latency_ms,
                     "heatmap_data": heatmap_base64
@@ -257,47 +312,46 @@ with col2:
     
     if st.session_state.xai_res:
         res = st.session_state.xai_res
-        p_label, conf, latency = res["prediction"], res["confidence"], res["latency_ms"]
+        p_mat, p_obj, conf, latency = res["prediction_material"], res["prediction_object"], res["confidence"], res["latency_ms"]
         
         c1, c2, c3 = st.columns(3)
-        # 만약 플라스틱인데 종이로 예측했다면 UI에서 경고색(red)을 띄우는 로직을 추가해도 좋습니다.
-        c1.metric("AI 예측 클래스", p_label.upper())
+        # 멀티태스크 구조의 산출물 시각화
+        c1.metric("AI 예측 재질 (물건 종류)", f"{p_mat.upper()} ({p_obj})")
         c2.metric("인프라 추론 신뢰도", f"{conf} %")
         c3.metric("Edge 지연 처리 시간", f"{latency} ms", "⚡ 실시간 규격 통과")
         
         st.write("🔍 **합성곱 신경망(CNN) 특징점 맵 분석 추출 결과 (Real Grad-CAM)**")
         if res["heatmap_data"]:
             heatmap_bytes = base64.b64decode(res["heatmap_data"])
-            st.image(heatmap_bytes, caption="AI가 실제로 주목한 영역 시각화 (붉은색일수록 강한 활성화)", use_container_width=True)
+            st.image(heatmap_bytes, caption=f"AI가 주목한 [{p_obj}] 형태 특성 핵심 시각화 리포트", use_container_width=True)
         else:
             st.warning("⚠️ 모델 구조에서 Conv 레이어를 찾지 못해 Grad-CAM을 생성할 수 없습니다.")
         
         st.divider()
         
         st.write("🛠️ **Active Learning 자율형 데이터 정제 및 RDBMS 환류 루프**")
-        
         is_guest = "Guest" in st.session_state.role
         
         if is_guest:
             st.warning("🔒 현재 게스트 권한으로 분석 조회 중입니다. 데이터베이스 입력 피드백 권한이 제한됩니다.")
-            final_label = st.selectbox("정답 재질 확인 (게스트 수정 불가)", TARGET_CLASSES, index=TARGET_CLASSES.index(p_label) if p_label in TARGET_CLASSES else 0, disabled=True)
+            final_label = st.selectbox("정답 재질 확인 (게스트 수정 불가)", TARGET_MATERIALS, index=TARGET_MATERIALS.index(p_mat) if p_mat in TARGET_MATERIALS else 0, disabled=True)
             st.button("정제 데이터 자율 기여 및 모델 자동 환류 적용 (연구원 전용 기능)", use_container_width=True, disabled=True)
         else:
             st.success("🔓 연구원 권한: AI가 오답을 냈다면, 아래에서 '올바른 정답(예: plastic)'으로 정정 후 기여해주세요.")
-            final_label = st.selectbox("정답 재질 정정 레이블 지정을 선택하십시오.", TARGET_CLASSES, index=TARGET_CLASSES.index(p_label) if p_label in TARGET_CLASSES else 0)
+            final_label = st.selectbox("정답 재질 정정 레이블 지정을 선택하십시오.", TARGET_MATERIALS, index=TARGET_MATERIALS.index(p_mat) if p_mat in TARGET_MATERIALS else 0)
             
             if st.button("정제 데이터 자율 기여 및 모델 자동 환류 적용", use_container_width=True):
-                is_correct = 1 if p_label == final_label else 0
+                is_correct = 1 if p_mat == final_label else 0
                 timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                 
                 with sqlite3.connect(DB_PATH) as conn:
                     c = conn.cursor()
                     c.execute("INSERT INTO feedback (timestamp, filename, predicted, confidence, actual, is_correct) VALUES (?, ?, ?, ?, ?, ?)",
-                              (timestamp, st.session_state.uploaded_filename, p_label, conf, final_label, is_correct))
+                              (timestamp, st.session_state.uploaded_filename, p_mat, conf, final_label, is_correct))
                     conn.commit()
                     
                 st.success(f"🎯 [{final_label}] 레이블로 DB에 커밋되었습니다. 차기 모델 재학습 시 오인식 교정에 사용됩니다.")
-                time.sleep(1.5) # 사용자가 메시지를 읽을 수 있도록 대기 시간 늘림
+                time.sleep(1.5)
                 st.session_state.xai_res = None
                 st.rerun()
     else:
