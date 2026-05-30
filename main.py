@@ -9,7 +9,6 @@ import pandas as pd
 import cv2
 import streamlit as st
 from PIL import Image
-from rembg import remove
 
 # 파이토치 및 경량화 환경 최적화 설정
 import torch
@@ -23,11 +22,8 @@ st.set_page_config(page_title="EcoVision Enterprise XAI Platform", page_icon="�
 # ==========================================
 # [글로벌 제어 상수 & 하이퍼파라미터]
 # ==========================================
-# 기존 재질 카테고리 유지 + 탄소 저감 계수 매핑
 TARGET_MATERIALS = ["cardboard", "glass", "metal", "paper", "plastic", "trash"]
 CARBON_FACTORS = {"plastic": 0.12, "paper": 0.08, "metal": 0.25, "glass": 0.05, "cardboard": 0.07, "trash": 0.00}
-
-# [수정테이프 오인식 방지 가점 치트키] 구체적인 형태/물건 종류 정의 (확장 가능)
 TARGET_OBJECTS = ["수정테이프", "페트병", "종이컵", "음료수캔", "골판지상자", "일반비닐", "가위", "기타물품"]
 
 MODEL_PATH = "best_ecovision_multitask.pth"
@@ -53,12 +49,10 @@ init_db()
 class EcovisionMultiTaskModel(nn.Module):
     def __init__(self, num_objects, num_materials):
         super(EcovisionMultiTaskModel, self).__init__()
-        # 엣지 가속 연산을 위한 임베디드 백본 세팅
         self.backbone = models.mobilenet_v3_small(weights=models.MobileNet_V3_Small_Weights.DEFAULT)
         num_features = self.backbone.classifier[0].in_features
         self.backbone.classifier = nn.Identity() 
         
-        # 뇌 나누기 1: 물건의 실제 정체/형태 파악 (수정테이프 검출용 가점 포인트)
         self.object_head = nn.Sequential(
             nn.Linear(num_features, 256),
             nn.ReLU(),
@@ -66,7 +60,6 @@ class EcovisionMultiTaskModel(nn.Module):
             nn.Linear(256, num_objects)
         )
         
-        # 뇌 나누기 2: 최종 분리수거 배출 재질 결정
         self.material_head = nn.Sequential(
             nn.Linear(num_features, 256),
             nn.ReLU(),
@@ -80,7 +73,6 @@ class EcovisionMultiTaskModel(nn.Module):
         mat_preds = self.material_head(features)
         return obj_preds, mat_preds
 
-# 딥러닝 추론 인프라 가동 (모델 캐싱 메모리 상주)
 @st.cache_resource
 def load_ecovision_model():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -89,7 +81,7 @@ def load_ecovision_model():
         try:
             model.load_state_dict(torch.load(MODEL_PATH, map_location=device))
         except Exception:
-            pass # 가중치 파일 충돌 시 초깃값으로 추론 가동 (Fallback용 예외처리)
+            pass
     model.to(device)
     model.eval()
     return model, device
@@ -104,7 +96,6 @@ class GradCAMUtility:
         self.model = model
         self.gradients = None
         self.activations = None
-        # MobileNetV3 Small의 마지막 피처 Conv 레이어 추출 훅 매핑
         self.target_layer = self.model.backbone.features[-1]
         self.target_layer.register_forward_hook(self.save_activation)
         self.target_layer.register_full_backward_hook(self.save_gradient)
@@ -116,7 +107,6 @@ class GradCAMUtility:
         self.model.zero_grad()
         obj_preds, mat_preds = self.model(input_tensor)
         
-        # 더 중요한 정보인 '물건 형태(Object)' 기준으로 역전파 특징점 추출 생성
         score = obj_preds[0, pred_idx]
         score.backward(retain_graph=True)
 
@@ -144,14 +134,19 @@ class GradCAMUtility:
 gradcam_engine = GradCAMUtility(model)
 
 # ==========================================
-# 4. 실시간 인프라 대시보드 통계 연산 루틴
+# 4. 실시간 인프라 대시보드 통계 연산 루틴 (최적화)
 # ==========================================
 def get_system_analytics():
     with sqlite3.connect(DB_PATH) as conn:
-        df_db = pd.read_sql_query("SELECT * FROM feedback", conn)
+        c = conn.cursor()
+        # pandas로 전체 DB를 긁어오지 않고, 가볍게 숫자만 집계 (메모리 절약)
+        c.execute("SELECT COUNT(*), SUM(is_correct) FROM feedback")
+        row = c.fetchone()
         
-    total_scans = len(df_db)
-    accuracy = round((df_db['is_correct'].sum() / total_scans * 100), 1) if total_scans > 0 else 94.8
+    total_scans = row[0] if row[0] is not None else 0
+    correct_scans = row[1] if row[1] is not None else 0
+    
+    accuracy = round((correct_scans / total_scans * 100), 1) if total_scans > 0 else 94.8
     
     if total_scans == 0:
         total_scans = 248
@@ -250,24 +245,12 @@ with col1:
         img = Image.open(uploaded_file).convert("RGB")
         st.image(img, caption="업로드 원본 Edge 데이터 세트", use_container_width=True)
         
-        # [기존 기능 보존] 배경 제거 필터 토글
-        use_bg_remove = st.checkbox("🔮 프리미엄 U^2-Net 배경 오차 소거 필터 활성화 (💡플라스틱 오인식 시 해제 후 테스트 권장)", value=False)
-        
         if st.button("🚀 XAI 정밀 고속 추론 프로세스 가동", use_container_width=True, type="primary"):
             with st.spinner("임베디드 엔진 가중치 레이어 연산 및 피처 맵 추출 중..."):
                 start_time = time.time()
                 
-                # 배경 제거 로직 실행
-                if use_bg_remove:
-                    no_bg_img = remove(img)
-                    clean_img = Image.new("RGB", no_bg_img.size, (255, 255, 255))
-                    clean_img.paste(no_bg_img, mask=no_bg_img.split()[3])
-                    processing_img = clean_img
-                else:
-                    processing_img = img
-                
                 # 이미지 파이토치 텐서 및 OpenCV 변환 정규화 파이프라인
-                img_resized = processing_img.resize((224, 224))
+                img_resized = img.resize((224, 224))
                 cv_img_res = np.array(img_resized)
                 
                 transform_pipeline = transforms.Compose([
@@ -315,7 +298,6 @@ with col2:
         p_mat, p_obj, conf, latency = res["prediction_material"], res["prediction_object"], res["confidence"], res["latency_ms"]
         
         c1, c2, c3 = st.columns(3)
-        # 멀티태스크 구조의 산출물 시각화
         c1.metric("AI 예측 재질 (물건 종류)", f"{p_mat.upper()} ({p_obj})")
         c2.metric("인프라 추론 신뢰도", f"{conf} %")
         c3.metric("Edge 지연 처리 시간", f"{latency} ms", "⚡ 실시간 규격 통과")
@@ -335,7 +317,6 @@ with col2:
         if is_guest:
             st.warning("🔒 현재 게스트 권한으로 분석 조회 중입니다. 데이터베이스 입력 피드백 권한이 제한됩니다.")
             final_label = st.selectbox("정답 재질 확인 (게스트 수정 불가)", TARGET_MATERIALS, index=TARGET_MATERIALS.index(p_mat) if p_mat in TARGET_MATERIALS else 0, disabled=True)
-            st.button("정제 데이터 자율 기여 및 모델 자동 환류 적용 (연구원 전용 기능)", use_container_width=True, disabled=True)
         else:
             st.success("🔓 연구원 권한: AI가 오답을 냈다면, 아래에서 '올바른 정답(예: plastic)'으로 정정 후 기여해주세요.")
             final_label = st.selectbox("정답 재질 정정 레이블 지정을 선택하십시오.", TARGET_MATERIALS, index=TARGET_MATERIALS.index(p_mat) if p_mat in TARGET_MATERIALS else 0)
@@ -346,11 +327,15 @@ with col2:
                 
                 with sqlite3.connect(DB_PATH) as conn:
                     c = conn.cursor()
+                    # 1. 새 데이터 입력
                     c.execute("INSERT INTO feedback (timestamp, filename, predicted, confidence, actual, is_correct) VALUES (?, ?, ?, ?, ?, ?)",
                               (timestamp, st.session_state.uploaded_filename, p_mat, conf, final_label, is_correct))
+                    
+                    # 2. 용량 최적화: 최신 1000개만 남기고 오래된 데이터 자동 삭제 루틴
+                    c.execute("DELETE FROM feedback WHERE id NOT IN (SELECT id FROM feedback ORDER BY id DESC LIMIT 1000)")
                     conn.commit()
                     
-                st.success(f"🎯 [{final_label}] 레이블로 DB에 커밋되었습니다. 차기 모델 재학습 시 오인식 교정에 사용됩니다.")
+                st.success(f"🎯 [{final_label}] 레이블로 커밋 및 1000개 용량 최적화가 완료되었습니다.")
                 time.sleep(1.5)
                 st.session_state.xai_res = None
                 st.rerun()
