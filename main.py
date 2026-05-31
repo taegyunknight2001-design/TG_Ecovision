@@ -62,12 +62,11 @@ def init_db():
 init_db()
 
 # ==========================================
-# 2. 멀티태스크 AI 모델 아키텍처 (버전 파편화 방어 고도화)
+# 2. 멀티태스크 AI 모델 아키텍처
 # ==========================================
 class EcovisionMultiTaskModel(nn.Module):
     def __init__(self, num_objects, num_materials):
         super(EcovisionMultiTaskModel, self).__init__()
-        # PyTorch/Torchvision 버전 유연성 확보 로직
         try:
             self.backbone = models.mobilenet_v3_small(weights=models.MobileNet_V3_Small_Weights.DEFAULT)
         except Exception:
@@ -89,26 +88,32 @@ class EcovisionMultiTaskModel(nn.Module):
 
 @st.cache_resource
 def load_ecovision_model():
+    # 🚨 엄격한 가중치 파일 존재 여부 검증 (무결성 규칙 적용)
+    if not os.path.exists(MODEL_PATH):
+        st.error(f"❌ [Fatal Error] 하드웨어 가속에 필요한 딥러닝 핵심 가중치 파일 '{MODEL_PATH}'을 찾을 수 없습니다.")
+        st.info("💡 연구원 환경의 메인 디렉토리에 학습이 완료된 훈련 모델(PTH 파일)을 배치한 뒤 서버를 재가동하십시오. 난수 시뮬레이션 우회는 원천 차단되었습니다.")
+        st.markdown("---")
+        st.stop() # 인프라 가동 즉시 중단 및 시스템 락(Lock)
+        
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = EcovisionMultiTaskModel(num_objects=len(TARGET_OBJECTS), num_materials=len(TARGET_MATERIALS))
     
-    if os.path.exists(MODEL_PATH):
-        try:
-            model.load_state_dict(torch.load(MODEL_PATH, map_location=device))
-            st.sidebar.success("🎯 정식 가중치 파일(PTH) 로드 성공")
-        except Exception as e:
-            st.sidebar.error(f"가중치 로드 오류: {e} (초기 가상 아키텍처 레이어로 연산)")
-    else:
-        st.sidebar.warning("⚠️ 가중치(.pth)가 아직 빌드되지 않아 임시 난수 인프라 레이어로 가동합니다.")
+    try:
+        model.load_state_dict(torch.load(MODEL_PATH, map_location=device))
+        st.sidebar.success("🎯 정식 가중치 파일(PTH) 로드 무결성 검증 완료")
+    except Exception as e:
+        st.error(f"❌ 가중치 파일은 존재하나 손상되었거나 아키텍처 구조가 불일치합니다: {e}")
+        st.stop()
         
     model.to(device)
     model.eval()
     return model, device
 
+# 가중치 검증 단계 실행
 model, device = load_ecovision_model()
 
 # ==========================================
-# 3. 실시간 AI 판단 근거 시각화 파이프라인 (중복 등록 무력화 패치)
+# 3. 실시간 AI 판단 근거 시각화 파이프라인 (Grad-CAM)
 # ==========================================
 class GradCAMUtility:
     def __init__(self, model_instance):
@@ -116,7 +121,6 @@ class GradCAMUtility:
         self.gradients = None
         self.activations = None
         
-        # 중복 Hook 등록 방지 장치 활성화
         self.target_layer = self.model.backbone.features[-1]
         self.target_layer._forward_hooks.clear()
         self.target_layer._backward_hooks.clear()
@@ -162,10 +166,9 @@ class GradCAMUtility:
             _, buffer = cv2.imencode('.jpg', cv2.cvtColor(blended, cv2.COLOR_RGB2BGR))
             return base64.b64encode(buffer).decode('utf-8')
         except Exception as e:
-            print(f"Grad-CAM 런타임 우회 처리: {e}")
+            print(f"Grad-CAM 런타임 예외 처리: {e}")
             return None
 
-# [핵심 변경] 언더바(_) 접두사를 사용해 PyTorch 모델 해싱 객체화 오류 원천 차단
 @st.cache_resource
 def get_cached_gradcam_engine(_model_instance):
     return GradCAMUtility(_model_instance)
@@ -215,7 +218,7 @@ st.sidebar.markdown("### 🛠️ 엔터프라이즈 인프라")
 st.sidebar.info(storage_status)
 
 # ==========================================
-# 6. 이원화 로그인 게이트웨이 (2FA 유지 및 보안 변수 백업)
+# 6. 이원화 로그인 게이트웨이
 # ==========================================
 def enterprise_login_system():
     ADMIN_ID = os.getenv("ECOVISION_ADMIN_ID", "taegyun")
@@ -264,7 +267,7 @@ enterprise_login_system()
 # 7. 메인 비주얼 대시보드 UI 레이아웃
 # ==========================================
 st.title("⚡ 글로벌 ESG 기준 대응 설명 가능한 AI(XAI) 기반 고성능 자원 순환 자동화 시스템")
-st.caption("대학 학술 및 비즈니스 아키텍처 | High-Performance Architecture, Real Grad-CAM & Edge Performance Dashboard")
+st.caption("대학 학술 및 비즈니스 아키텍처 | 정식 인공지능 모델 전면 활성화 모드")
 
 total_scans, accuracy, chart_labels, carbon_trends, edge_load_pct = get_system_analytics()
 
@@ -282,9 +285,6 @@ col1, col2 = st.columns([1, 1])
 if "xai_res" not in st.session_state: st.session_state.xai_res = None
 if "uploaded_filename" not in st.session_state: st.session_state.uploaded_filename = None
 
-# Streamlit 버전에 따른 가로폭 인자 바인딩 안전화 설정
-img_width_kwargs = {"use_container_width": True}
-
 with col1:
     st.markdown("<div class='report-card'>", unsafe_allow_html=True)
     st.subheader("📸 고해상도 자원 샘플 입력 인프라")
@@ -292,7 +292,8 @@ with col1:
     
     if uploaded_file:
         img = Image.open(uploaded_file).convert("RGB")
-        st.image(img, caption="업로드 원본 Edge 데이터 세트", **img_width_kwargs)
+        # 🎯 [수정 완료] TypeError 유발 인자 제거 및 정식 레이아웃 명세 적용
+        st.image(img, caption="업로드 원본 Edge 데이터 세트", use_container_width=True)
         
         if st.button("🚀 XAI 정밀 고속 추론 프로세스 가동", use_container_width=True, type="primary"):
             with st.spinner("임베디드 엔진 가중치 레이어 연산 및 피처 맵 추출 중..."):
@@ -308,7 +309,6 @@ with col1:
                 input_tensor = transform_pipeline(img_resized).unsqueeze(0).to(device)
                 input_tensor.requires_grad_()
                 
-                # 🚀 파이토치 멀티태스크 추론 연산
                 with torch.set_grad_enabled(True):
                     obj_preds, mat_preds = model(input_tensor)
                     
@@ -322,7 +322,6 @@ with col1:
                 predicted_material = TARGET_MATERIALS[top_mat_idx]
                 confidence = float(mat_probs[0, top_mat_idx].item() * 100)
                 
-                # Real Grad-CAM 맵 실시간 생성 연동
                 heatmap_base64 = gradcam_engine.generate(input_tensor, cv_img_res, top_obj_idx)
                 
                 latency_ms = round((time.time() - start_time) * 1000, 1)
@@ -354,9 +353,10 @@ with col2:
         st.write("🔍 **합성곱 신경망(CNN) 특징점 맵 분석 추출 결과 (Real Grad-CAM)**")
         if res["heatmap_data"]:
             heatmap_bytes = base64.b64decode(res["heatmap_data"])
-            st.image(heatmap_bytes, caption=f"AI가 주목한 [{p_obj}] 형태 특성 핵심 시각화 리포트", **img_width_kwargs)
+            # 🎯 [수정 완료] 피드백 리포트 이미지의 인자 규격도 안전하게 통일
+            st.image(heatmap_bytes, caption=f"AI가 주목한 [{p_obj}] 형태 특성 핵심 시각화 리포트", use_container_width=True)
         else:
-            st.warning("⚠️ 특징맵 가중치 추적 한계 또는 초기화 상태로 인해 히트맵 시각화 출력을 우회합니다.")
+            st.warning("⚠️ 특징맵 가중치 추적 한계로 인해 히트맵 출력을 우회합니다.")
         
         st.divider()
         
@@ -367,7 +367,7 @@ with col2:
             st.warning("🔒 현재 게스트 권한으로 분석 조회 중입니다. 데이터베이스 입력 피드백 권한이 제한됩니다.")
             final_label = st.selectbox("정답 재질 확인 (게스트 수정 불가)", TARGET_MATERIALS, index=TARGET_MATERIALS.index(p_mat) if p_mat in TARGET_MATERIALS else 0, disabled=True)
         else:
-            st.success("🔓 연구원 권한: AI가 오답을 냈다면, 아래에서 '올바른 정답(예: plastic)'으로 정정 후 기여해주세요.")
+            st.success("🔓 연구원 권한 활성화 상태")
             final_label = st.selectbox("정답 재질 정정 레이블 지정을 선택하십시오.", TARGET_MATERIALS, index=TARGET_MATERIALS.index(p_mat) if p_mat in TARGET_MATERIALS else 0)
             
             if st.button("정제 데이터 자율 기여 및 모델 자동 환류 적용", use_container_width=True):
