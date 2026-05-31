@@ -1,6 +1,15 @@
-streamlit==1.35.0
+--extra-index-url https://download.pytorch.org/whl/cpu
+torch==2.2.2+cpu
+torchvision==0.17.2+cpu
 tensorflow-cpu==2.15.0
+streamlit==1.35.0
+fastapi==0.110.0
+uvicorn==0.28.0
+pydantic==2.6.4
+requests==2.31.0
 numpy<2.0.0
-pandas
-opencv-python-headless
-Pillow
+pandas==2.2.1
+opencv-python-headless==4.9.0.80
+Pillow==10.2.0
+rembg==2.0.53
+onnxruntime==1.17.1
